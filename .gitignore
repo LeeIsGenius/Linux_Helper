@@ -1,0 +1,12 @@
+# Python 가상환경 및 캐시
+.venv/
+__pycache__/
+*.pyc
+
+# 시스템 임시 파일 및 파이프
+/tmp/agent_fifo
+*.log
+
+# VS Code 및 기타
+.vscode/
+.DS_Store
