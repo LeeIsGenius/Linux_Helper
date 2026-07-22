@@ -30,7 +30,7 @@ BOLD = "\033[1m"
 llm = ChatOllama(
     base_url=OLLAMA_URL,
     model=MODEL_NAME,
-    temperature=0.1
+    temperature=0.0
 )
 
 class AgentState(TypedDict):
@@ -47,13 +47,14 @@ class AgentState(TypedDict):
 # Graph Nodes
 # ==========================================
 def parse_and_backup_node(state: AgentState) -> AgentState:
-    """Node 1: Traceback에서 대상 파이썬 파일 추출 및 .bak 백업 생성"""
-    print(f"\n{YELLOW}⚡ [LangGraph: Node 1] 에러 유형 및 대상 추적 중...{RESET}")
+    """Node 1: Traceback에서 파이썬 파일 경로 정밀 추출"""
+    print(f"\n{YELLOW}⚡ [LangGraph: Node 1] 에러 파일 추적 중...{RESET}")
     sys.stdout.flush()
 
-    match = re.search(r'File "([^"]+)"', state['raw_error'])
-    if match:
-        file_path = match.group(1)
+    matches = re.findall(r'File "([^"]+\.py)"', state['raw_error'])
+    if matches:
+        raw_path = matches[-1].strip()
+        file_path = os.path.abspath(raw_path)
         state['target_file'] = file_path
         
         if os.path.exists(file_path):
@@ -64,7 +65,7 @@ def parse_and_backup_node(state: AgentState) -> AgentState:
             except Exception as e:
                 state['backup_status'] = f"❌ 백업 실패 ({e})"
         else:
-            state['backup_status'] = "⚠️ 파일 경로 부재"
+            state['backup_status'] = f"⚠️ 파일 찾을 수 없음 ({file_path})"
     else:
         state['target_file'] = "N/A"
         state['backup_status'] = "ℹ️ CLI 단일 명령어 실행건"
@@ -73,7 +74,7 @@ def parse_and_backup_node(state: AgentState) -> AgentState:
 
 
 def analyze_error_node(state: AgentState) -> AgentState:
-    """Node 2: 에러 요약 및 원인 분석"""
+    """Node 2: 에러 원인 분석"""
     print(f"{YELLOW}⚡ [LangGraph: Node 2] 에러 원인 분석 중...{RESET}")
     sys.stdout.flush()
 
@@ -94,68 +95,72 @@ def analyze_error_node(state: AgentState) -> AgentState:
 
 
 def code_patcher_node(state: AgentState) -> AgentState:
-    """Node 3-A: 파이썬 파일 전용 - 코드 자동 수정 및 덮어쓰기"""
-    print(f"{YELLOW}⚡ [LangGraph: Node 3-A] 파이썬 소스코드 자동 패치 중...{RESET}")
+    """Node 3-A: 파이썬 소스코드 자동 패치 및 강제적용 중"""
+    print(f"{YELLOW}⚡ [LangGraph: Node 3-A] 연쇄 버그 포함 전면 정밀 패치 중...{RESET}")
     sys.stdout.flush()
 
+    target_file = state['target_file']
     target_code = ""
-    if state['target_file'] != "N/A" and os.path.exists(state['target_file']):
+
+    if target_file != "N/A" and os.path.exists(target_file):
         try:
-            with open(state['target_file'], 'r') as f:
+            with open(target_file, 'r', encoding='utf-8') as f:
                 target_code = f.read()
-        except Exception:
-            target_code = ""
+        except Exception as e:
+            print(f"{RED}[!] 파일 읽기 에러: {e}{RESET}")
 
     prompt = (
-        "너는 파이썬 버그 수정 자동화 도구이다.\n"
-        "아래 에러와 원본 코드를 분석하여, 에러가 나지 않고 정상 실행되는 수정된 파이썬 코드 전체를 작성하라.\n"
-        "설명, 인사말, 주석을 절대 포함하지 마라. 오직 실행 가능한 파이썬 소스코드만 출력하라.\n\n"
-        f"[에러 분석]\n{state['analysis']}\n\n"
-        f"[원본 코드]\n{target_code}"
+        "너는 파이썬 소스코드의 모든 버그를 한 번에 완벽 치료하는 수석 개발 에이전트다.\n"
+        "제시된 에러 로그뿐만 아니라 원본 코드 전체를 정밀 분석하여, 향후 발생할 수 있는 모든 연쇄 버그(KeyError, ZeroDivisionError, TypeError 등)를 방어 조건문이나 try-except로 미리 완전 치유한 '전체 코드'를 작성하라.\n\n"
+        "[절대 수칙]\n"
+        "1. 눈앞에 터진 에러만 고치지 말고, 코드 아래쪽에 잠복해 있는 0 나누기나 타입 오류까지 선제적으로 완전히 고쳐라.\n"
+        "2. 설명, 인사말, 주석, 마크다운(```)을 절대 포함하지 마라. 오직 즉시 실행 가능한 파이썬 소스코드 전체만 출력하라.\n\n"
+        f"[발생한 에러 로그]\n{state['raw_error']}\n\n"
+        f"[원본 소스코드]\n{target_code}"
     )
     messages = [
-        SystemMessage(content="You are an automated Python code patcher. Output ONLY executable Python source code without markdown or quotes."),
+        SystemMessage(content="You are an automated Python full-code patcher. Fix the reported error AND all latent errors in the entire script. Output ONLY executable Python code."),
         HumanMessage(content=prompt)
     ]
     response = llm.invoke(messages)
-    clean_code = response.content.strip()
+    raw_text = response.content.strip()
 
-    # 정규식을 이용해 코드 앞뒤에 붙은 마크다운 세개 백틱 정제
-    clean_code = re.sub(r'^```python\n?', '', clean_code)
-    clean_code = re.sub(r'^```\n?', '', clean_code)
-    clean_code = re.sub(r'\n?```$', '', clean_code).strip()
+    # 정규식으로 순수 코드만 적출
+    code_match = re.search(r'```(?:python)?\s*\n(.*?)\n```', raw_text, re.DOTALL)
+    if code_match:
+        clean_code = code_match.group(1).strip()
+    else:
+        clean_code = re.sub(r'^(Here is|This is|Below is|Note:).*$', '', raw_text, flags=re.MULTILINE).strip()
 
     state['fixed_code'] = clean_code
 
-    if state['target_file'] != "N/A" and os.path.exists(state['target_file']) and clean_code:
+    if target_file != "N/A" and os.path.exists(target_file) and clean_code:
         try:
-            with open(state['target_file'], 'w') as f:
+            with open(target_file, 'w', encoding='utf-8') as f:
                 f.write(clean_code + "\n")
-            state['apply_status'] = f"🚀 원본 파이썬 파일({os.path.basename(state['target_file'])}) 수정 완료!"
+            state['apply_status'] = f"🚀 원본 파일({os.path.basename(target_file)}) 정밀 완전 패치 완료!"
         except Exception as e:
-            state['apply_status'] = f"❌ 파일 수정 적용 실패 ({e})"
+            state['apply_status'] = f"❌ 적용 실패 ({e})"
     else:
-        state['apply_status'] = "ℹ️ 수정 적용 불가"
+        state['apply_status'] = f"⚠️ 적용 스킵 (target_file={target_file})"
 
     return state
 
 
 def cli_advisor_node(state: AgentState) -> AgentState:
-    """Node 3-B: CLI 명령어 전용 - 해결 명령어 처방전 제시"""
+    """Node 3-B: CLI 해결 명령어 제시"""
     print(f"{YELLOW}⚡ [LangGraph: Node 3-B] 리눅스 CLI 해결 명령어 생성 중...{RESET}")
     sys.stdout.flush()
 
     prompt = (
-        "리눅스 CLI 터미널에서 다음 명령어 오류가 발생했습니다.\n"
-        "사용자가 바로 실행하여 해결할 수 있는 추천 리눅스 명령어(Bash)를 제시하세요.\n\n"
+        "리눅스 CLI 터미널 에러를 해결할 한 줄 Bash 명령어를 작성하세요.\n\n"
         f"[에러 로그]\n{state['raw_error']}\n\n"
-        f"[에러 분석]\n{state['analysis']}\n\n"
         "[작성 양식]\n"
-        "🛠️ **추천 해결 명령어**: (해결에 필요한 Bash 명령어 한 줄)\n"
-        "📌 **실행 가이드**: (간단한 조치 설명)"
+        "🛠️ **추천 해결 명령어**: (실행할 Bash 명령어)\n"
+        "📌 **실행 가이드**: (한 줄 가이드)"
     )
     messages = [
-        SystemMessage(content="당신은 리눅스 시스템 엔지니어 부관입니다. 마크다운 깨짐 없이 정확한 Bash 해결 명령어를 제시하세요."),
+        SystemMessage(content="당신은 리눅스 에러 해결 부관입니다."),
         HumanMessage(content=prompt)
     ]
     response = llm.invoke(messages)
@@ -163,11 +168,7 @@ def cli_advisor_node(state: AgentState) -> AgentState:
     return state
 
 
-# ==========================================
-# LangGraph Routing Condition
-# ==========================================
 def route_error_type(state: AgentState) -> str:
-    """파이썬 파일 수정인가, CLI 명령어 처방인가 조건부 분기"""
     if state['target_file'] != "N/A":
         return "patcher"
     else:
@@ -175,7 +176,7 @@ def route_error_type(state: AgentState) -> str:
 
 
 # ==========================================
-# Build LangGraph Workflow
+# Graph Workflow
 # ==========================================
 workflow = StateGraph(AgentState)
 
@@ -202,12 +203,9 @@ workflow.add_edge("cli_advisor", END)
 app = workflow.compile()
 
 
-# ==========================================
-# Main Execution
-# ==========================================
 def main():
     print(f"{GREEN}=========================================={RESET}")
-    print(f"{GREEN}   🛡️  Linux Helper v2.2 (Clean Parser)     {RESET}")
+    print(f"{GREEN}   🛡️  Linux Helper v2.6 (Strict Code Extractor) {RESET}")
     print(f"{GREEN}   Monitoring Pipe: {FIFO_PATH}{RESET}")
     print(f"{GREEN}   Model: {MODEL_NAME}{RESET}")
     print(f"{GREEN}=========================================={RESET}\n")
@@ -223,7 +221,7 @@ def main():
                 log_data = fifo.read().strip()
                 if log_data:
                     print(f"\n{CYAN}{'='*50}{RESET}")
-                    print(f"{BOLD}📊 [AI Terminal Agent - Smart Workflow v2.2]{RESET}")
+                    print(f"{BOLD}📊 [AI Terminal Agent - Workflow v2.6]{RESET}")
                     
                     initial_state = {
                         "raw_error": log_data,
@@ -236,7 +234,7 @@ def main():
                     }
                     result = app.invoke(initial_state)
 
-                    print(f"\n📁 **대상 구분**: {'파이썬 소스코드' if result['target_file'] != 'N/A' else 'CLI 시스템 명령어'}")
+                    print(f"\n📁 **대상 파일**: {result['target_file']}")
                     print(f"{result['analysis']}\n")
                     
                     if result['target_file'] != 'N/A':
@@ -258,5 +256,5 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print(f"\n{RED}[!] AI 에러 모니터링 서비스가 종료되었습니다.{RESET}")
+        print(f"\n{RED}[!] 모니터링 서비스 종료.{RESET}")
         sys.exit(0)
